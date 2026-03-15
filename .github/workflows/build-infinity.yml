@@ -67,6 +67,12 @@ jobs:
             https://github.com/infiniflow/infinity.git
           cd infinity && git log --oneline -1
 
+      - name: Bootstrap vcpkg
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git
+          cd vcpkg && ./bootstrap-vcpkg.sh -disableMetrics
+          echo "VCPKG_ROOT=$PWD" >> $GITHUB_ENV
+
       - name: Configure CMake
         env:
           CC: /usr/bin/clang-20
@@ -80,6 +86,7 @@ jobs:
             -DCMAKE_VERBOSE_MAKEFILE=OFF \
             -DCMAKE_C_COMPILER=/usr/bin/clang-20 \
             -DCMAKE_CXX_COMPILER=/usr/bin/clang++-20 \
+            -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
             ..
 
       - name: Build Infinity
