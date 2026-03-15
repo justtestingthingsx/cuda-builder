@@ -29,6 +29,11 @@ on:
         required: false
         default: ''
         type: string
+      pr_source_repo:
+        description: 'Repo to fetch PRs from (if different from custom_repo, e.g. upstream)'
+        required: false
+        default: ''
+        type: string
       python_version:
         description: 'Python version'
         required: true
@@ -190,11 +195,20 @@ jobs:
         run: |
           git config user.email "builder@meandmyboiclaude.github.io"
           git config user.name "CUDA Builder"
+
+          # If pr_source_repo is set and different from origin, add it as a remote
+          PR_REMOTE="origin"
+          if [ -n "${{ inputs.pr_source_repo }}" ]; then
+            echo "Adding upstream remote for PR fetching: ${{ inputs.pr_source_repo }}"
+            git remote add upstream "${{ inputs.pr_source_repo }}"
+            PR_REMOTE="upstream"
+          fi
+
           IFS=',' read -ra PRS <<< "${{ inputs.cherry_pick_prs }}"
           for pr in "${PRS[@]}"; do
             pr=$(echo "$pr" | xargs)
             echo "=== Fetching and merging PR #${pr} ==="
-            git fetch origin pull/${pr}/head:pr-${pr}
+            git fetch ${PR_REMOTE} pull/${pr}/head:pr-${pr}
             git merge --no-edit pr-${pr} && echo "Applied PR #${pr}" || {
               echo "::warning::Merge conflict on PR #${pr}, attempting with strategy"
               git merge --abort
