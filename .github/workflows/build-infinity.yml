@@ -22,6 +22,7 @@ on:
         default: 'ubicloud-standard-64'
         type: choice
         options:
+          - ubuntu-latest
           - ubicloud-standard-64
           - ubicloud-standard-32
 
