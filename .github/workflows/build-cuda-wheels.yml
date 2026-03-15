@@ -209,6 +209,15 @@ jobs:
         run: |
           ${{ steps.project.outputs.pre_cmd }}
 
+      - name: Add swap space
+        run: |
+          sudo fallocate -l 128G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          echo "Swap enabled:"
+          free -h
+
       - name: Build wheel
         working-directory: source
         run: |
