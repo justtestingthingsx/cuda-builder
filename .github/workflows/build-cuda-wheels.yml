@@ -71,7 +71,7 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest-m
+    runs-on: Big_64Core
     timeout-minutes: 120
 
     steps:
