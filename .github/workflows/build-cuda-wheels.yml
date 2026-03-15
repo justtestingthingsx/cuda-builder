@@ -71,7 +71,7 @@ env:
 
 jobs:
   build:
-    runs-on: Tesla_16gb_Gpu
+    runs-on: ubicloud-standard-30
     timeout-minutes: 120
 
     steps:
