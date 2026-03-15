@@ -12,6 +12,7 @@ on:
           - flash-attn
           - exllamav3
           - causal-conv1d
+          - sglang
           - custom
       custom_repo:
         description: 'Custom repo URL (only if project=custom)'
@@ -34,17 +35,23 @@ on:
       cuda_version:
         description: 'CUDA toolkit version'
         required: true
-        default: '12.8'
+        default: '13.0'
         type: choice
         options:
+          - '13.0'
+          - '13.1'
           - '12.8'
           - '12.6'
           - '12.4'
-          - '13.0'
       torch_version:
-        description: 'PyTorch version (leave empty for project default)'
+        description: 'PyTorch version+cu tag (e.g. 2.11.0, leave empty for latest)'
         required: false
-        default: ''
+        default: '2.11.0'
+        type: string
+      torch_index:
+        description: 'PyTorch wheel index suffix (e.g. cu130, cu128)'
+        required: false
+        default: 'cu130'
         type: string
       cuda_arch:
         description: 'CUDA architectures (semicolon-separated)'
@@ -54,7 +61,7 @@ on:
       max_jobs:
         description: 'Parallel build jobs'
         required: false
-        default: '4'
+        default: '8'
         type: string
 
 env:
@@ -70,8 +77,9 @@ jobs:
     steps:
       - name: Free disk space
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost /opt/hostedtoolcache
           sudo apt-get clean
+          echo "Free space:"
           df -h /
 
       - name: Set up Python ${{ inputs.python_version }}
@@ -80,24 +88,34 @@ jobs:
           python-version: ${{ inputs.python_version }}
 
       - name: Install CUDA ${{ inputs.cuda_version }}
-        uses: Jimver/cuda-toolkit@v0.2.19
+        uses: Jimver/cuda-toolkit@v0.2.30
         id: cuda-toolkit
         with:
           cuda: ${{ inputs.cuda_version }}.0
           method: 'network'
           linux-local-args: '["--toolkit"]'
 
-      - name: Install build dependencies
+      - name: Install PyTorch
         run: |
-          python -m pip install --upgrade pip setuptools wheel
-          python -m pip install ninja cmake build
-          # Install torch if specified
+          python -m pip install --upgrade pip setuptools wheel ninja cmake
+          TORCH_INDEX="https://download.pytorch.org/whl/${{ inputs.torch_index }}"
           if [ -n "${{ inputs.torch_version }}" ]; then
-            python -m pip install torch==${{ inputs.torch_version }} --index-url https://download.pytorch.org/whl/cu$(echo ${{ inputs.cuda_version }} | tr -d '.')
+            echo "Installing torch==${{ inputs.torch_version }} from $TORCH_INDEX"
+            python -m pip install torch==${{ inputs.torch_version }} --index-url "$TORCH_INDEX"
+          else
+            echo "Installing latest torch from $TORCH_INDEX"
+            python -m pip install torch --index-url "$TORCH_INDEX"
           fi
+          python -c "import torch; print('torch:', torch.__version__, 'cuda:', torch.version.cuda)"
+
+      - name: Set build environment
+        run: |
           echo "CUDA_HOME=${{ steps.cuda-toolkit.outputs.CUDA_PATH }}" >> $GITHUB_ENV
           echo "TORCH_CUDA_ARCH_LIST=${{ inputs.cuda_arch }}" >> $GITHUB_ENV
           echo "MAX_JOBS=${{ inputs.max_jobs }}" >> $GITHUB_ENV
+          # Some projects need these
+          echo "FORCE_CUDA=1" >> $GITHUB_ENV
+          echo "CUDA_VISIBLE_DEVICES=0" >> $GITHUB_ENV
 
       - name: Resolve project
         id: project
@@ -107,25 +125,31 @@ jobs:
               echo "repo=https://github.com/InternLM/lmdeploy.git" >> $GITHUB_OUTPUT
               echo "ref=${{ inputs.custom_ref || 'main' }}" >> $GITHUB_OUTPUT
               echo "build_cmd=pip wheel . --no-deps --wheel-dir dist/" >> $GITHUB_OUTPUT
-              echo "pre_cmd=pip install cmake_build_extension" >> $GITHUB_OUTPUT
+              echo "pre_cmd=pip install cmake_build_extension pyyaml addict mmengine-lite" >> $GITHUB_OUTPUT
               ;;
             flash-attn)
               echo "repo=https://github.com/Dao-AILab/flash-attention.git" >> $GITHUB_OUTPUT
-              echo "ref=${{ inputs.custom_ref || 'main' }}" >> $GITHUB_OUTPUT
+              echo "ref=${{ inputs.custom_ref || 'v2.8.3' }}" >> $GITHUB_OUTPUT
               echo "build_cmd=pip wheel . --no-deps --no-build-isolation --wheel-dir dist/" >> $GITHUB_OUTPUT
-              echo "pre_cmd=pip install torch packaging" >> $GITHUB_OUTPUT
+              echo "pre_cmd=pip install packaging einops" >> $GITHUB_OUTPUT
               ;;
             exllamav3)
               echo "repo=https://github.com/turboderp-org/exllamav3.git" >> $GITHUB_OUTPUT
               echo "ref=${{ inputs.custom_ref || 'main' }}" >> $GITHUB_OUTPUT
               echo "build_cmd=pip wheel . --no-deps --no-build-isolation --wheel-dir dist/" >> $GITHUB_OUTPUT
-              echo "pre_cmd=pip install torch packaging ninja" >> $GITHUB_OUTPUT
+              echo "pre_cmd=pip install packaging ninja safetensors" >> $GITHUB_OUTPUT
               ;;
             causal-conv1d)
               echo "repo=https://github.com/Dao-AILab/causal-conv1d.git" >> $GITHUB_OUTPUT
               echo "ref=${{ inputs.custom_ref || 'main' }}" >> $GITHUB_OUTPUT
               echo "build_cmd=pip wheel . --no-deps --no-build-isolation --wheel-dir dist/" >> $GITHUB_OUTPUT
-              echo "pre_cmd=pip install torch packaging" >> $GITHUB_OUTPUT
+              echo "pre_cmd=pip install packaging" >> $GITHUB_OUTPUT
+              ;;
+            sglang)
+              echo "repo=https://github.com/sgl-project/sglang.git" >> $GITHUB_OUTPUT
+              echo "ref=${{ inputs.custom_ref || 'main' }}" >> $GITHUB_OUTPUT
+              echo "build_cmd=pip wheel . --no-deps --wheel-dir dist/" >> $GITHUB_OUTPUT
+              echo "pre_cmd=pip install packaging" >> $GITHUB_OUTPUT
               ;;
             custom)
               echo "repo=${{ inputs.custom_repo }}" >> $GITHUB_OUTPUT
@@ -143,9 +167,6 @@ jobs:
       - name: Install project prerequisites
         run: |
           ${{ steps.project.outputs.pre_cmd }}
-          # Install torch if not already installed and not specified
-          python -c "import torch; print('torch', torch.__version__)" 2>/dev/null || \
-            python -m pip install torch --index-url https://download.pytorch.org/whl/cu$(echo ${{ inputs.cuda_version }} | tr -d '.')
 
       - name: Build wheel
         working-directory: source
@@ -156,9 +177,13 @@ jobs:
           echo "MAX_JOBS=$MAX_JOBS"
           python -c "import torch; print('torch:', torch.__version__, 'cuda:', torch.version.cuda)"
           nvcc --version | tail -1
+          gcc --version | head -1
+          echo "Free space: $(df -h / | tail -1 | awk '{print $4}')"
+          echo "RAM: $(free -h | grep Mem | awk '{print $2}')"
+          echo "CPUs: $(nproc)"
           echo "==================="
 
-          ${{ steps.project.outputs.build_cmd }}
+          ${{ steps.project.outputs.build_cmd }} 2>&1 | tail -50
 
           echo "=== Built wheels ==="
           ls -lh dist/*.whl
@@ -166,9 +191,9 @@ jobs:
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.project }}-cp${{ inputs.python_version }}-cu${{ inputs.cuda_version }}-sm${{ inputs.cuda_arch }}
+          name: ${{ inputs.project }}-py${{ inputs.python_version }}-${{ inputs.torch_index }}-sm${{ inputs.cuda_arch }}
           path: source/dist/*.whl
-          retention-days: 30
+          retention-days: 90
           if-no-files-found: error
 
       - name: Summary
@@ -179,7 +204,10 @@ jobs:
           echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Project | ${{ inputs.project }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Python | ${{ inputs.python_version }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| CUDA | ${{ inputs.cuda_version }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| SM Arch | ${{ inputs.cuda_arch }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| CUDA Toolkit | ${{ inputs.cuda_version }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Torch | $(python -c 'import torch; print(torch.__version__)') |" >> $GITHUB_STEP_SUMMARY
-          echo "| Wheel | $(ls source/dist/*.whl | head -1) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Torch CUDA | $(python -c 'import torch; print(torch.version.cuda)') |" >> $GITHUB_STEP_SUMMARY
+          echo "| SM Arch | ${{ inputs.cuda_arch }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| MAX_JOBS | ${{ inputs.max_jobs }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Wheel | $(basename $(ls source/dist/*.whl | head -1)) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Size | $(ls -lh source/dist/*.whl | awk '{print $5}') |" >> $GITHUB_STEP_SUMMARY
