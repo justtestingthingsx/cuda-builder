@@ -69,7 +69,7 @@ jobs:
 
       - name: Bootstrap vcpkg
         run: |
-          git clone --depth 1 https://github.com/microsoft/vcpkg.git
+          git clone https://github.com/microsoft/vcpkg.git
           cd vcpkg && ./bootstrap-vcpkg.sh -disableMetrics
           echo "VCPKG_ROOT=$PWD" >> $GITHUB_ENV
 
