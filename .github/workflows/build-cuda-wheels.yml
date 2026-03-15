@@ -224,10 +224,23 @@ jobs:
           echo "CPUs: $(nproc)"
           echo "==================="
 
-          ${{ steps.project.outputs.build_cmd }} 2>&1 | tail -50
+          # Monitor memory in background
+          ( while true; do
+              echo "::group::Memory $(date +%H:%M:%S)"
+              free -h | head -2
+              echo "::endgroup::"
+              sleep 30
+            done ) &
+          MEM_PID=$!
+
+          ${{ steps.project.outputs.build_cmd }}
+          BUILD_EXIT=$?
+
+          kill $MEM_PID 2>/dev/null || true
 
           echo "=== Built wheels ==="
           ls -lh dist/*.whl
+          exit $BUILD_EXIT
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4
