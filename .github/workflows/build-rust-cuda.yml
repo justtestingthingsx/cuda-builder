@@ -90,6 +90,7 @@ jobs:
         env:
           CUDA_HOME: ${{ steps.cuda-toolkit.outputs.CUDA_PATH }}
           CUDA_ROOT: ${{ steps.cuda-toolkit.outputs.CUDA_PATH }}
+          RUSTFLAGS: "-A warnings"
         run: |
           echo "=== Build Config ==="
           echo "CUDA_HOME=$CUDA_HOME"
