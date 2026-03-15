@@ -1,0 +1,185 @@
+name: Build CUDA Wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: 'Project to build'
+        required: true
+        type: choice
+        options:
+          - lmdeploy
+          - flash-attn
+          - exllamav3
+          - causal-conv1d
+          - custom
+      custom_repo:
+        description: 'Custom repo URL (only if project=custom)'
+        required: false
+        type: string
+      custom_ref:
+        description: 'Branch/tag/commit (default: main)'
+        required: false
+        default: 'main'
+        type: string
+      python_version:
+        description: 'Python version'
+        required: true
+        default: '3.12'
+        type: choice
+        options:
+          - '3.12'
+          - '3.11'
+          - '3.13'
+      cuda_version:
+        description: 'CUDA toolkit version'
+        required: true
+        default: '12.8'
+        type: choice
+        options:
+          - '12.8'
+          - '12.6'
+          - '12.4'
+          - '13.0'
+      torch_version:
+        description: 'PyTorch version (leave empty for project default)'
+        required: false
+        default: ''
+        type: string
+      cuda_arch:
+        description: 'CUDA architectures (semicolon-separated)'
+        required: true
+        default: '8.6'
+        type: string
+      max_jobs:
+        description: 'Parallel build jobs'
+        required: false
+        default: '4'
+        type: string
+
+env:
+  PYTHON_VERSION: ${{ inputs.python_version }}
+  CUDA_ARCH: ${{ inputs.cuda_arch }}
+  MAX_JOBS: ${{ inputs.max_jobs }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
+          sudo apt-get clean
+          df -h /
+
+      - name: Set up Python ${{ inputs.python_version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Install CUDA ${{ inputs.cuda_version }}
+        uses: Jimver/cuda-toolkit@v0.2.19
+        id: cuda-toolkit
+        with:
+          cuda: ${{ inputs.cuda_version }}.0
+          method: 'network'
+          linux-local-args: '["--toolkit"]'
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install ninja cmake build
+          # Install torch if specified
+          if [ -n "${{ inputs.torch_version }}" ]; then
+            python -m pip install torch==${{ inputs.torch_version }} --index-url https://download.pytorch.org/whl/cu$(echo ${{ inputs.cuda_version }} | tr -d '.')
+          fi
+          echo "CUDA_HOME=${{ steps.cuda-toolkit.outputs.CUDA_PATH }}" >> $GITHUB_ENV
+          echo "TORCH_CUDA_ARCH_LIST=${{ inputs.cuda_arch }}" >> $GITHUB_ENV
+          echo "MAX_JOBS=${{ inputs.max_jobs }}" >> $GITHUB_ENV
+
+      - name: Resolve project
+        id: project
+        run: |
+          case "${{ inputs.project }}" in
+            lmdeploy)
+              echo "repo=https://github.com/InternLM/lmdeploy.git" >> $GITHUB_OUTPUT
+              echo "ref=${{ inputs.custom_ref || 'main' }}" >> $GITHUB_OUTPUT
+              echo "build_cmd=pip wheel . --no-deps --wheel-dir dist/" >> $GITHUB_OUTPUT
+              echo "pre_cmd=pip install cmake_build_extension" >> $GITHUB_OUTPUT
+              ;;
+            flash-attn)
+              echo "repo=https://github.com/Dao-AILab/flash-attention.git" >> $GITHUB_OUTPUT
+              echo "ref=${{ inputs.custom_ref || 'main' }}" >> $GITHUB_OUTPUT
+              echo "build_cmd=pip wheel . --no-deps --no-build-isolation --wheel-dir dist/" >> $GITHUB_OUTPUT
+              echo "pre_cmd=pip install torch packaging" >> $GITHUB_OUTPUT
+              ;;
+            exllamav3)
+              echo "repo=https://github.com/turboderp-org/exllamav3.git" >> $GITHUB_OUTPUT
+              echo "ref=${{ inputs.custom_ref || 'main' }}" >> $GITHUB_OUTPUT
+              echo "build_cmd=pip wheel . --no-deps --no-build-isolation --wheel-dir dist/" >> $GITHUB_OUTPUT
+              echo "pre_cmd=pip install torch packaging ninja" >> $GITHUB_OUTPUT
+              ;;
+            causal-conv1d)
+              echo "repo=https://github.com/Dao-AILab/causal-conv1d.git" >> $GITHUB_OUTPUT
+              echo "ref=${{ inputs.custom_ref || 'main' }}" >> $GITHUB_OUTPUT
+              echo "build_cmd=pip wheel . --no-deps --no-build-isolation --wheel-dir dist/" >> $GITHUB_OUTPUT
+              echo "pre_cmd=pip install torch packaging" >> $GITHUB_OUTPUT
+              ;;
+            custom)
+              echo "repo=${{ inputs.custom_repo }}" >> $GITHUB_OUTPUT
+              echo "ref=${{ inputs.custom_ref || 'main' }}" >> $GITHUB_OUTPUT
+              echo "build_cmd=pip wheel . --no-deps --wheel-dir dist/" >> $GITHUB_OUTPUT
+              echo "pre_cmd=echo 'no pre-install'" >> $GITHUB_OUTPUT
+              ;;
+          esac
+
+      - name: Clone source
+        run: |
+          git clone --depth 1 --branch ${{ steps.project.outputs.ref }} ${{ steps.project.outputs.repo }} source
+          cd source && git log --oneline -1
+
+      - name: Install project prerequisites
+        run: |
+          ${{ steps.project.outputs.pre_cmd }}
+          # Install torch if not already installed and not specified
+          python -c "import torch; print('torch', torch.__version__)" 2>/dev/null || \
+            python -m pip install torch --index-url https://download.pytorch.org/whl/cu$(echo ${{ inputs.cuda_version }} | tr -d '.')
+
+      - name: Build wheel
+        working-directory: source
+        run: |
+          echo "=== Build Config ==="
+          echo "CUDA_HOME=$CUDA_HOME"
+          echo "TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST"
+          echo "MAX_JOBS=$MAX_JOBS"
+          python -c "import torch; print('torch:', torch.__version__, 'cuda:', torch.version.cuda)"
+          nvcc --version | tail -1
+          echo "==================="
+
+          ${{ steps.project.outputs.build_cmd }}
+
+          echo "=== Built wheels ==="
+          ls -lh dist/*.whl
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.project }}-cp${{ inputs.python_version }}-cu${{ inputs.cuda_version }}-sm${{ inputs.cuda_arch }}
+          path: source/dist/*.whl
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Summary
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Project | ${{ inputs.project }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Python | ${{ inputs.python_version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| CUDA | ${{ inputs.cuda_version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| SM Arch | ${{ inputs.cuda_arch }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Torch | $(python -c 'import torch; print(torch.__version__)') |" >> $GITHUB_STEP_SUMMARY
+          echo "| Wheel | $(ls source/dist/*.whl | head -1) |" >> $GITHUB_STEP_SUMMARY
