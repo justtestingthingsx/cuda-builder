@@ -39,8 +39,15 @@ jobs:
           nproc && free -h && df -h /
           cat /etc/os-release | head -5
 
-      - name: Install LLVM/Clang 20
+      - name: Install GCC 15 + LLVM/Clang 20
         run: |
+          # GCC 15 (needed for libstdc++ C++23 module std.cc)
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update
+          sudo apt-get install -y gcc-15 g++-15 libstdc++-15-dev
+          # Verify std.cc module file exists
+          find /usr -name "std.cc" -path "*/c++/15*" 2>/dev/null || echo "WARNING: std.cc not found"
+          # LLVM/Clang 20
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
           echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-20 main" | sudo tee /etc/apt/sources.list.d/llvm20.list
           sudo apt-get update
