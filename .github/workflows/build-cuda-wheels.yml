@@ -13,6 +13,7 @@ on:
           - exllamav3
           - causal-conv1d
           - sglang
+          - tensorrt-llm
           - custom
       custom_repo:
         description: 'Custom repo URL (only if project=custom)'
@@ -151,8 +152,14 @@ jobs:
             sglang)
               echo "repo=https://github.com/sgl-project/sglang.git" >> $GITHUB_OUTPUT
               echo "ref=${{ inputs.custom_ref || 'main' }}" >> $GITHUB_OUTPUT
-              echo "build_cmd=pip wheel . --no-deps --wheel-dir dist/" >> $GITHUB_OUTPUT
-              echo "pre_cmd=pip install packaging" >> $GITHUB_OUTPUT
+              echo "build_cmd=cd sgl-kernel && pip wheel . --no-deps --no-build-isolation --wheel-dir ../dist/" >> $GITHUB_OUTPUT
+              echo "pre_cmd=pip install scikit-build-core cmake ninja numpy packaging" >> $GITHUB_OUTPUT
+              ;;
+            tensorrt-llm)
+              echo "repo=https://github.com/NVIDIA/TensorRT-LLM.git" >> $GITHUB_OUTPUT
+              echo "ref=${{ inputs.custom_ref || 'main' }}" >> $GITHUB_OUTPUT
+              echo "build_cmd=TRTLLM_USE_PRECOMPILED=1 pip wheel . --no-deps --wheel-dir dist/" >> $GITHUB_OUTPUT
+              echo "pre_cmd=pip install packaging polygraphy mpi4py pynvml cuda-python tensorrt" >> $GITHUB_OUTPUT
               ;;
             custom)
               echo "repo=${{ inputs.custom_repo }}" >> $GITHUB_OUTPUT
