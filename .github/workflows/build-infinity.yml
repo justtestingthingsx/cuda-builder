@@ -1,0 +1,120 @@
+name: Build Infinity
+
+on:
+  workflow_dispatch:
+    inputs:
+      infinity_ref:
+        description: 'Infinity tag/branch/commit'
+        required: true
+        default: 'v0.7.0-dev2'
+        type: string
+      build_type:
+        description: 'CMake build type'
+        required: true
+        default: 'RelWithDebInfo'
+        type: choice
+        options:
+          - Release
+          - RelWithDebInfo
+      runner:
+        description: 'Runner to use'
+        required: true
+        default: 'ubicloud-standard-64'
+        type: choice
+        options:
+          - ubicloud-standard-64
+          - ubicloud-standard-32
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 120
+
+    steps:
+      - name: System info
+        run: |
+          echo "Runner: ${{ inputs.runner }}"
+          nproc && free -h && df -h /
+          cat /etc/os-release | head -5
+
+      - name: Install LLVM/Clang 20
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-20 main" | sudo tee /etc/apt/sources.list.d/llvm20.list
+          sudo apt-get update
+          sudo apt-get install -y clang-20 lld-20 libc++-20-dev libc++abi-20-dev
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get install -y \
+            cmake ninja-build git wget unzip pkg-config bison flex \
+            autoconf autoconf-archive libtool zlib1g-dev python3-dev \
+            libssl-dev libzstd-dev uuid-dev earlyoom
+          # Verify versions
+          cmake --version | head -1
+          ninja --version
+          clang-20 --version | head -1
+
+      - name: Clone Infinity
+        run: |
+          git clone --depth 1 --branch ${{ inputs.infinity_ref }} \
+            https://github.com/infiniflow/infinity.git
+          cd infinity && git log --oneline -1
+
+      - name: Configure CMake
+        env:
+          CC: /usr/bin/clang-20
+          CXX: /usr/bin/clang++-20
+        run: |
+          cd infinity
+          mkdir -p cmake-build-release
+          cd cmake-build-release
+          cmake -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
+            -DCMAKE_VERBOSE_MAKEFILE=OFF \
+            -DCMAKE_C_COMPILER=/usr/bin/clang-20 \
+            -DCMAKE_CXX_COMPILER=/usr/bin/clang++-20 \
+            ..
+
+      - name: Build Infinity
+        run: |
+          cd infinity/cmake-build-release
+          # Use 3/4 of available cores to avoid OOM during linking
+          CORES=$(($(nproc) * 3 / 4))
+          echo "Building with $CORES cores..."
+          cmake --build . -t infinity -j $CORES
+
+      - name: Package binary and resources
+        run: |
+          mkdir -p infinity-dist/bin infinity-dist/conf infinity-dist/resource
+
+          # Binary
+          cp infinity/cmake-build-release/src/infinity infinity-dist/bin/
+          strip infinity-dist/bin/infinity
+          ls -lh infinity-dist/bin/infinity
+
+          # Config template
+          cp infinity/conf/infinity_conf.toml infinity-dist/conf/
+
+          # Resource files (tokenizer dicts)
+          if [ -d infinity/resource ]; then
+            cp -r infinity/resource/* infinity-dist/resource/
+          fi
+
+          # Version info
+          echo "${{ inputs.infinity_ref }}" > infinity-dist/VERSION
+          echo "Built $(date -u +%Y-%m-%dT%H:%M:%SZ) on ${{ inputs.runner }}" >> infinity-dist/VERSION
+
+          # Check linked libraries
+          ldd infinity-dist/bin/infinity || true
+
+          # Tarball
+          tar czf infinity-${{ inputs.infinity_ref }}-linux-x86_64.tar.gz -C infinity-dist .
+          ls -lh infinity-*.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: infinity-${{ inputs.infinity_ref }}-linux-x86_64
+          path: infinity-*.tar.gz
+          retention-days: 30
