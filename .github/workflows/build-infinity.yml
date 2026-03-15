@@ -19,13 +19,12 @@ on:
       runner:
         description: 'Runner to use'
         required: true
-        default: 'ubicloud-standard-64'
+        default: 'ubicloud-standard-30'
         type: choice
         options:
-          - ubicloud-standard-64
-          - ubicloud-standard-32
-          - Big_64Core
-          - BIG96CPU
+          - ubicloud-standard-30
+          - ubicloud-standard-16
+          - ubicloud-standard-8
           - ubuntu-latest
 
 jobs:
