@@ -1,0 +1,23 @@
+name: Test Runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_label:
+        description: 'Runner label to test'
+        required: true
+        type: string
+
+jobs:
+  test:
+    runs-on: ${{ inputs.runner_label }}
+    timeout-minutes: 5
+    steps:
+      - name: Info
+        run: |
+          echo "Runner: ${{ inputs.runner_label }}"
+          echo "CPUs: $(nproc)"
+          echo "RAM: $(free -h | grep Mem | awk '{print $2}')"
+          echo "Disk: $(df -h / | tail -1 | awk '{print $4}')"
+          nvcc --version 2>/dev/null || echo "No CUDA toolkit"
+          python3 --version 2>/dev/null || echo "No Python"
