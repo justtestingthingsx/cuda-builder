@@ -22,9 +22,11 @@ on:
         default: 'ubicloud-standard-64'
         type: choice
         options:
-          - ubuntu-latest
           - ubicloud-standard-64
           - ubicloud-standard-32
+          - Big_64Core
+          - BIG96CPU
+          - ubuntu-latest
 
 jobs:
   build:
