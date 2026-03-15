@@ -153,7 +153,7 @@ jobs:
               echo "repo=https://github.com/sgl-project/sglang.git" >> $GITHUB_OUTPUT
               echo "ref=${{ inputs.custom_ref || 'main' }}" >> $GITHUB_OUTPUT
               echo "build_cmd=cd sgl-kernel && pip wheel . --no-deps --no-build-isolation --wheel-dir ../dist/" >> $GITHUB_OUTPUT
-              echo "pre_cmd=pip install scikit-build-core cmake ninja numpy packaging" >> $GITHUB_OUTPUT
+              echo "pre_cmd=sudo apt-get install -y libnuma-dev && pip install scikit-build-core cmake ninja numpy packaging" >> $GITHUB_OUTPUT
               ;;
             tensorrt-llm)
               echo "repo=https://github.com/NVIDIA/TensorRT-LLM.git" >> $GITHUB_OUTPUT
