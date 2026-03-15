@@ -24,6 +24,11 @@ on:
         required: false
         default: 'main'
         type: string
+      cherry_pick_prs:
+        description: 'PR numbers to merge (comma-separated, e.g. 20370,19961)'
+        required: false
+        default: ''
+        type: string
       python_version:
         description: 'Python version'
         required: true
@@ -152,7 +157,7 @@ jobs:
             sglang)
               echo "repo=https://github.com/sgl-project/sglang.git" >> $GITHUB_OUTPUT
               echo "ref=${{ inputs.custom_ref || 'main' }}" >> $GITHUB_OUTPUT
-              echo "build_cmd=cd sgl-kernel && CMAKE_POLICY_VERSION_MINIMUM=3.5 pip wheel . --no-deps --no-build-isolation --wheel-dir ../dist/" >> $GITHUB_OUTPUT
+              echo "build_cmd=cd sgl-kernel && CMAKE_POLICY_VERSION_MINIMUM=3.5 pip wheel . --no-deps --no-build-isolation --wheel-dir ../dist/ && cd .. && pip wheel ./python --no-deps --wheel-dir dist/" >> $GITHUB_OUTPUT
               echo "pre_cmd=sudo apt-get install -y libnuma-dev && pip install scikit-build-core cmake ninja numpy packaging" >> $GITHUB_OUTPUT
               ;;
             tensorrt-llm)
@@ -171,8 +176,34 @@ jobs:
 
       - name: Clone source
         run: |
-          git clone --depth 1 --branch ${{ steps.project.outputs.ref }} ${{ steps.project.outputs.repo }} source
+          if [ -n "${{ inputs.cherry_pick_prs }}" ]; then
+            # Full clone needed to fetch PR refs
+            git clone --branch ${{ steps.project.outputs.ref }} ${{ steps.project.outputs.repo }} source
+          else
+            git clone --depth 1 --branch ${{ steps.project.outputs.ref }} ${{ steps.project.outputs.repo }} source
+          fi
           cd source && git log --oneline -1
+
+      - name: Apply PR patches
+        if: inputs.cherry_pick_prs != ''
+        working-directory: source
+        run: |
+          git config user.email "builder@meandmyboiclaude.github.io"
+          git config user.name "CUDA Builder"
+          IFS=',' read -ra PRS <<< "${{ inputs.cherry_pick_prs }}"
+          for pr in "${PRS[@]}"; do
+            pr=$(echo "$pr" | xargs)
+            echo "=== Fetching and merging PR #${pr} ==="
+            git fetch origin pull/${pr}/head:pr-${pr}
+            git merge --no-edit pr-${pr} && echo "Applied PR #${pr}" || {
+              echo "::warning::Merge conflict on PR #${pr}, attempting with strategy"
+              git merge --abort
+              git merge -X theirs --no-edit pr-${pr} || { echo "::error::Failed to apply PR #${pr}"; exit 1; }
+              echo "Applied PR #${pr} (with theirs strategy)"
+            }
+          done
+          echo "=== Final state ==="
+          git log --oneline -$((${#PRS[@]} + 1))
 
       - name: Install project prerequisites
         run: |
@@ -219,5 +250,5 @@ jobs:
           echo "| Torch CUDA | $(python -c 'import torch; print(torch.version.cuda)') |" >> $GITHUB_STEP_SUMMARY
           echo "| SM Arch | ${{ inputs.cuda_arch }} |" >> $GITHUB_STEP_SUMMARY
           echo "| MAX_JOBS | ${{ inputs.max_jobs }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Wheel | $(basename $(ls source/dist/*.whl | head -1)) |" >> $GITHUB_STEP_SUMMARY
-          echo "| Size | $(ls -lh source/dist/*.whl | awk '{print $5}') |" >> $GITHUB_STEP_SUMMARY
+          echo "| Cherry-picked PRs | ${{ inputs.cherry_pick_prs || 'none' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Wheels | $(ls source/dist/*.whl | xargs -I{} basename {}) |" >> $GITHUB_STEP_SUMMARY
