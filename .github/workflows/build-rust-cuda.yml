@@ -1,0 +1,150 @@
+name: Build Rust CUDA Binary
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_url:
+        description: 'Git repo URL'
+        required: true
+        default: 'https://github.com/Lexmata/llama-gguf.git'
+        type: string
+      branch:
+        description: 'Branch/tag/commit'
+        required: false
+        default: 'develop'
+        type: string
+      features:
+        description: 'Cargo features (comma-separated)'
+        required: false
+        default: 'cuda,cli'
+        type: string
+      binary_name:
+        description: 'Binary name (from Cargo.toml)'
+        required: true
+        default: 'llama-gguf'
+        type: string
+      cuda_version:
+        description: 'CUDA toolkit version'
+        required: true
+        default: '13.0'
+        type: choice
+        options:
+          - '13.0'
+          - '13.1'
+          - '12.8'
+          - '12.6'
+      rust_version:
+        description: 'Rust toolchain version'
+        required: false
+        default: 'stable'
+        type: string
+      runner:
+        description: 'Runner label'
+        required: true
+        default: 'ubicloud-standard-8'
+        type: choice
+        options:
+          - 'ubicloud-standard-4'
+          - 'ubicloud-standard-8'
+          - 'ubicloud-standard-16'
+          - 'ubicloud-standard-30'
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 60
+
+    steps:
+      - name: System info
+        run: |
+          echo "CPUs: $(nproc)"
+          echo "RAM: $(free -h | grep Mem | awk '{print $2}')"
+          echo "Disk: $(df -h / | tail -1 | awk '{print $4}') free"
+          uname -a
+
+      - name: Install CUDA ${{ inputs.cuda_version }}
+        uses: Jimver/cuda-toolkit@v0.2.30
+        id: cuda-toolkit
+        with:
+          cuda: ${{ inputs.cuda_version }}.0
+          method: 'network'
+          linux-local-args: '["--toolkit"]'
+
+      - name: Install Rust ${{ inputs.rust_version }}
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ inputs.rust_version }}
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev protobuf-compiler
+
+      - name: Clone source
+        run: |
+          git clone --depth 1 --branch ${{ inputs.branch }} ${{ inputs.repo_url }} source
+          cd source && git log --oneline -1
+
+      - name: Build
+        working-directory: source
+        env:
+          CUDA_HOME: ${{ steps.cuda-toolkit.outputs.CUDA_PATH }}
+          CUDA_ROOT: ${{ steps.cuda-toolkit.outputs.CUDA_PATH }}
+        run: |
+          echo "=== Build Config ==="
+          echo "CUDA_HOME=$CUDA_HOME"
+          echo "Rust: $(rustc --version)"
+          echo "Cargo: $(cargo --version)"
+          nvcc --version | tail -1
+          echo "==================="
+
+          FEATURES="${{ inputs.features }}"
+          if [ -n "$FEATURES" ]; then
+            cargo build --release --features "$FEATURES"
+          else
+            cargo build --release
+          fi
+
+          echo "=== Built binary ==="
+          ls -lh target/release/${{ inputs.binary_name }}
+          file target/release/${{ inputs.binary_name }}
+
+      - name: Package binary
+        working-directory: source
+        run: |
+          mkdir -p dist
+          cp target/release/${{ inputs.binary_name }} dist/
+          # Strip debug symbols for smaller binary
+          strip dist/${{ inputs.binary_name }}
+          ls -lh dist/${{ inputs.binary_name }}
+          # Also include version info
+          echo "Built from: ${{ inputs.repo_url }} @ ${{ inputs.branch }}" > dist/BUILD_INFO
+          echo "Features: ${{ inputs.features }}" >> dist/BUILD_INFO
+          echo "CUDA: ${{ inputs.cuda_version }}" >> dist/BUILD_INFO
+          echo "Rust: $(rustc --version)" >> dist/BUILD_INFO
+          echo "Date: $(date -u)" >> dist/BUILD_INFO
+          git log --oneline -1 >> dist/BUILD_INFO
+          tar czf dist/${{ inputs.binary_name }}-linux-x64-cuda${{ inputs.cuda_version }}.tar.gz -C dist ${{ inputs.binary_name }} BUILD_INFO
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.binary_name }}-linux-x64-cuda${{ inputs.cuda_version }}
+          path: source/dist/${{ inputs.binary_name }}-linux-x64-cuda${{ inputs.cuda_version }}.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Summary
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Repo | ${{ inputs.repo_url }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Branch | ${{ inputs.branch }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Features | ${{ inputs.features }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Binary | ${{ inputs.binary_name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| CUDA | ${{ inputs.cuda_version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Rust | $(rustc --version) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Runner | ${{ inputs.runner }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Size | $(ls -lh source/dist/${{ inputs.binary_name }} | awk '{print $5}') |" >> $GITHUB_STEP_SUMMARY
