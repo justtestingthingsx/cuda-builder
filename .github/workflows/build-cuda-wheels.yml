@@ -71,7 +71,7 @@ env:
 
 jobs:
   build:
-    runs-on: Big_64Core
+    runs-on: Tesla_16gb_Gpu
     timeout-minutes: 120
 
     steps:
