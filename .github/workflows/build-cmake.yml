@@ -150,8 +150,19 @@ jobs:
           if [ -d "build/bin" ]; then
             cp build/bin/* dist/ 2>/dev/null || true
           fi
-          # Also check build/ root for binaries (some projects put them there)
-          find build -maxdepth 1 -type f -executable -exec cp {} dist/ \; 2>/dev/null || true
+          # Copy shared libraries from ALL possible locations
+          for libdir in build/bin build/lib build/src build/ggml/src; do
+            if [ -d "$libdir" ]; then
+              find "$libdir" -name "lib*.so*" -exec cp -P {} dist/ \; 2>/dev/null || true
+            fi
+          done
+          # Also search recursively for any .so files we missed
+          find build -name "lib*.so*" -not -path "*/CMakeFiles/*" -exec cp -P {} dist/ \; 2>/dev/null || true
+          # Deduplicate symlinks (keep real files + symlinks)
+          cd dist && for f in *.so.*.*.*; do
+            base="${f%%.*}.so"
+            [ -f "$f" ] && [ ! -L "$f" ] && ln -sf "$f" "$base" 2>/dev/null || true
+          done && cd ..
 
           echo "=== Built binaries ==="
           ls -lh dist/
