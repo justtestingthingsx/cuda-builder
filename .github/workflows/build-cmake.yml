@@ -1,0 +1,189 @@
+name: Build CMake CUDA Project
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_url:
+        description: 'Git repo URL'
+        required: true
+        type: string
+      ref:
+        description: 'Branch/tag/commit to build'
+        required: false
+        default: 'main'
+        type: string
+      cherry_pick_prs:
+        description: 'PR numbers to merge (comma-separated, e.g. 20370,19961)'
+        required: false
+        default: ''
+        type: string
+      cuda_version:
+        description: 'CUDA toolkit version'
+        required: true
+        default: '13.0'
+        type: choice
+        options:
+          - '13.0'
+          - '13.1'
+          - '12.8'
+          - '12.6'
+          - '12.4'
+      cuda_arch:
+        description: 'CUDA architectures (semicolon-separated)'
+        required: true
+        default: '86'
+        type: string
+      cmake_args:
+        description: 'Extra CMake args (e.g. -DGGML_CUDA_FA_ALL_QUANTS=ON)'
+        required: false
+        default: ''
+        type: string
+      artifact_name:
+        description: 'Artifact name prefix (e.g. llama-cpp, ik-llama)'
+        required: true
+        default: 'cmake-build'
+        type: string
+      max_jobs:
+        description: 'Parallel build jobs'
+        required: false
+        default: '16'
+        type: string
+
+jobs:
+  build:
+    runs-on: ubicloud-standard-30
+    timeout-minutes: 60
+
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost /opt/hostedtoolcache
+          sudo apt-get clean
+          echo "Free space:"
+          df -h /
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build ccache
+
+      - name: Install CUDA ${{ inputs.cuda_version }}
+        uses: Jimver/cuda-toolkit@v0.2.30
+        id: cuda-toolkit
+        with:
+          cuda: ${{ inputs.cuda_version }}.0
+          method: 'network'
+          linux-local-args: '["--toolkit"]'
+
+      - name: Clone source
+        run: |
+          if [ -n "${{ inputs.cherry_pick_prs }}" ]; then
+            git clone --branch ${{ inputs.ref }} ${{ inputs.repo_url }} source
+          else
+            git clone --depth 1 --branch ${{ inputs.ref }} ${{ inputs.repo_url }} source
+          fi
+          cd source && git log --oneline -1
+
+      - name: Apply PR patches
+        if: inputs.cherry_pick_prs != ''
+        working-directory: source
+        run: |
+          git config user.email "builder@meandmyboiclaude.github.io"
+          git config user.name "CUDA Builder"
+          IFS=',' read -ra PRS <<< "${{ inputs.cherry_pick_prs }}"
+          for pr in "${PRS[@]}"; do
+            pr=$(echo "$pr" | xargs)
+            echo "=== Fetching and merging PR #${pr} ==="
+            git fetch origin pull/${pr}/head:pr-${pr}
+            git merge --no-edit pr-${pr} && echo "Applied PR #${pr}" || {
+              echo "::warning::Merge conflict on PR #${pr}, attempting with strategy"
+              git merge --abort
+              git merge -X theirs --no-edit pr-${pr} || { echo "::error::Failed to apply PR #${pr}"; exit 1; }
+              echo "Applied PR #${pr} (with theirs strategy)"
+            }
+          done
+          echo "=== Final state ==="
+          git log --oneline -$((${#PRS[@]} + 1))
+
+      - name: Configure CMake
+        working-directory: source
+        run: |
+          echo "=== Build Config ==="
+          echo "CUDA_HOME=${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
+          echo "CUDA_ARCH=${{ inputs.cuda_arch }}"
+          nvcc --version | tail -1
+          gcc --version | head -1
+          cmake --version | head -1
+          echo "CPUs: $(nproc)"
+          echo "==================="
+
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_ARCHITECTURES="${{ inputs.cuda_arch }}" \
+            -DCMAKE_CUDA_COMPILER="${{ steps.cuda-toolkit.outputs.CUDA_PATH }}/bin/nvcc" \
+            -DGGML_CUDA=ON \
+            ${{ inputs.cmake_args }}
+
+      - name: Build
+        working-directory: source
+        run: |
+          # Monitor memory in background
+          ( while true; do
+              echo "::group::Memory $(date +%H:%M:%S)"
+              free -h | head -2
+              echo "::endgroup::"
+              sleep 30
+            done ) &
+          MEM_PID=$!
+
+          cmake --build build --config Release -j ${{ inputs.max_jobs }}
+          BUILD_EXIT=$?
+
+          kill $MEM_PID 2>/dev/null || true
+          exit $BUILD_EXIT
+
+      - name: Package binaries
+        working-directory: source
+        run: |
+          mkdir -p dist
+          # Copy all executables from build/bin/
+          if [ -d "build/bin" ]; then
+            cp build/bin/* dist/ 2>/dev/null || true
+          fi
+          # Also check build/ root for binaries (some projects put them there)
+          find build -maxdepth 1 -type f -executable -exec cp {} dist/ \; 2>/dev/null || true
+
+          echo "=== Built binaries ==="
+          ls -lh dist/
+          file dist/* 2>/dev/null || true
+
+          # Get version info
+          VERSION_TAG="${{ inputs.ref }}"
+          GIT_SHORT=$(cd . && git rev-parse --short HEAD)
+
+          # Create tarball
+          cd dist
+          tar -czf "../${{ inputs.artifact_name }}-${VERSION_TAG}-${GIT_SHORT}-cuda${{ inputs.cuda_version }}-sm${{ inputs.cuda_arch }}.tar.gz" *
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}-cuda${{ inputs.cuda_version }}-sm${{ inputs.cuda_arch }}
+          path: source/${{ inputs.artifact_name }}-*.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Summary
+        run: |
+          echo "## CMake Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Repo | ${{ inputs.repo_url }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Ref | ${{ inputs.ref }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| CUDA Toolkit | ${{ inputs.cuda_version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| SM Arch | ${{ inputs.cuda_arch }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| CMake Args | ${{ inputs.cmake_args || 'defaults' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Cherry-picked PRs | ${{ inputs.cherry_pick_prs || 'none' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Binaries |" >> $GITHUB_STEP_SUMMARY
+          ls -1 source/dist/ | while read f; do echo "| | $f |" >> $GITHUB_STEP_SUMMARY; done
