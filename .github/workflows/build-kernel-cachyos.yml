@@ -1,0 +1,123 @@
+name: Build CachyOS Kernel RPM
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_version:
+        description: 'Base kernel version (e.g. 6.19)'
+        required: true
+        default: '6.19'
+        type: string
+      kernel_patch:
+        description: 'Patch level (e.g. 8)'
+        required: true
+        default: '8'
+        type: string
+      runner:
+        description: 'Runner to use'
+        required: true
+        default: 'ubicloud-standard-32'
+        type: choice
+        options:
+          - ubicloud-standard-32
+          - ubicloud-standard-16
+          - ubuntu-latest-m
+
+jobs:
+  build-kernel:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 120
+
+    steps:
+      - name: System info
+        run: |
+          echo "CPUs: $(nproc)"
+          echo "RAM: $(free -h | awk '/Mem:/{print $2}')"
+          echo "Disk: $(df -h / | tail -1 | awk '{print $4}') free"
+          cat /etc/os-release | head -3
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            bc bison dwarves libelf-dev flex gcc gettext \
+            make libssl-dev perl python3-dev python3-yaml \
+            clang lld llvm rpm rpmbuild createrepo-c \
+            zstd libncurses-dev 2>/dev/null || \
+          sudo apt-get install -y -qq \
+            bc bison dwarves libelf-dev flex gcc gettext \
+            make libssl-dev perl python3-dev python3-yaml \
+            clang lld llvm rpm zstd libncurses-dev
+
+      - name: Install rpm-build tools
+        run: |
+          # Ensure rpmbuild is available
+          which rpmbuild || sudo apt-get install -y rpm
+
+      - name: Setup rpmbuild tree
+        run: |
+          mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+
+      - name: Download spec file
+        run: |
+          curl -fsSL -o ~/rpmbuild/SPECS/kernel-cachyos.spec \
+            https://raw.githubusercontent.com/CachyOS/copr-linux-cachyos/master/sources/kernel-cachyos-bore/kernel-cachyos.spec
+
+      - name: Patch spec for current version
+        run: |
+          cd ~/rpmbuild/SPECS
+          # Update kernel version in spec if needed
+          sed -i 's/^%define _basekver.*/%define _basekver ${{ inputs.kernel_version }}/' kernel-cachyos.spec
+          sed -i 's/^%define _stablekver.*/%define _stablekver ${{ inputs.kernel_patch }}/' kernel-cachyos.spec
+          # Show what we're building
+          grep -E "^%define (_basekver|_stablekver|_tag)" kernel-cachyos.spec
+          echo "Building: ${{ inputs.kernel_version }}.${{ inputs.kernel_patch }}"
+
+      - name: Verify source exists
+        run: |
+          TAG="cachyos-${{ inputs.kernel_version }}.${{ inputs.kernel_patch }}-1"
+          URL="https://github.com/CachyOS/linux/archive/refs/tags/${TAG}.tar.gz"
+          echo "Checking: $URL"
+          STATUS=$(curl -sI -o /dev/null -w "%{http_code}" "$URL")
+          if [ "$STATUS" = "302" ] || [ "$STATUS" = "200" ]; then
+            echo "Source tag exists (HTTP $STATUS)"
+          else
+            echo "ERROR: Source tag not found (HTTP $STATUS)"
+            exit 1
+          fi
+
+      - name: Build kernel RPMs
+        run: |
+          # Build with Fedora 44 target
+          rpmbuild -bb ~/rpmbuild/SPECS/kernel-cachyos.spec \
+            --define "fedora 44" \
+            --define "dist .fc44" \
+            2>&1 | tee ~/kernel-build.log
+        env:
+          # Speed up with all available cores
+          MAKEFLAGS: "-j$(nproc)"
+
+      - name: List built RPMs
+        if: always()
+        run: |
+          echo "=== Built RPMs ==="
+          find ~/rpmbuild/RPMS -name "*.rpm" -exec ls -lh {} \; 2>/dev/null || echo "No RPMs found"
+          echo ""
+          echo "=== Build log tail ==="
+          tail -30 ~/kernel-build.log 2>/dev/null || true
+
+      - name: Upload kernel RPMs
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-cachyos-${{ inputs.kernel_version }}.${{ inputs.kernel_patch }}-rpms
+          path: ~/rpmbuild/RPMS/**/*.rpm
+          retention-days: 30
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-build-log
+          path: ~/kernel-build.log
+          retention-days: 7
